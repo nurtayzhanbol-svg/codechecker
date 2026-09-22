@@ -34,6 +34,7 @@
       - [Taint analysis configuration](#taint-analysis-configuration)
       - [Statistical analysis mode](#statistical-analysis-mode)
       - [Dynamic analysis results](#dynamic-analysis-results)
+      - [Symbol index](#symbol-index)
     - [`parse`](#parse)
       - [`JSON` format of `CodeChecker parse`](#json-format-of-codechecker-parse)
         - [Report object](#report-object)
@@ -1845,6 +1846,72 @@ these types:
       &lt;/array&gt;
     &lt;/dict&gt;
 </pre>
+
+#### Symbol index
+
+`CodeChecker analyze --symbol-index` (also available for `CodeChecker check`)
+generates a symbol definition index of the analyzed project into
+`<OUTPUT_DIR>/symbols.json` after the analysis, using
+[Universal Ctags](https://ctags.io). The `ctags` executable is looked up in
+`PATH`; another executable can be given with `--ctags-binary PATH`. Universal
+Ctags with JSON output support is required (`ctags --list-features` has to
+contain `json`), otherwise the command fails before the analysis starts.
+
+The following files are indexed for every compilation command of the
+compilation database:
+
+- the compiled source file itself, as the language of the compilation
+  (`c`, `c++`, ...), and
+- the headers it includes, discovered with the compiler's dependency
+  generation (`-M`), so `-D` controlled conditional includes are honored.
+  Headers located in the compiler's implicit include directories (standard
+  library, toolchain headers) are excluded, unless an include directory given
+  explicitly with `-I`, `-isystem`, `-iquote` or `-idirafter` is an equally or
+  more specific location of the header (e.g. `-I/usr/include/libxml2`).
+
+If the headers of a compilation command cannot be discovered, a warning is
+printed and only the source file is indexed.
+
+Files are identified by the SHA-256 hash of their content and the language
+they were compiled as. Byte-identical files share one index entry that lists
+all of their paths, while a header included from both C and C++ translation
+units gets two entries. Compiler options are never forwarded to Ctags, so
+conditional preprocessing branches inside a file are not evaluated: Ctags
+tags the definitions of every branch.
+
+```json
+{
+  "version": 1,
+  "indexes": [
+    {
+      "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "language": "c++",
+      "paths": [
+        "/project/include/common.h"
+      ],
+      "definitions": [
+        {
+          "name": "foo",
+          "kind": "function",
+          "line": 20,
+          "end_line": 24,
+          "scope": "Utils",
+          "scope_kind": "namespace",
+          "signature": "(int x)",
+          "typeref": "typename:int"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`kind` and `scope_kind` are the long kind names of the Ctags parser of the
+language (e.g. `function`, `struct`, `class`, `namespace`, `variable`,
+`typedef`, `macro`, `member`). `end_line`, `scope`, `scope_kind`, `signature`
+and `typeref` are `null` when not known. The output is deterministic: indexes
+are sorted by content hash and language, paths are sorted and definitions are
+in source order.
 
 ### `parse`
 
