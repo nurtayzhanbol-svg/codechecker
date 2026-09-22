@@ -127,6 +127,18 @@ def load_yaml(path: str):
         return None
 
 
+def get_file_content_hash(file_path: str | pathlib.Path) -> str:
+    """
+    Return the SHA-256 hex digest of the raw content of a file. This is the
+    content hash used to identify source files across CodeChecker components
+    (e.g. the 'content_hash' of a stored file).
+    """
+    with open(file_path, 'rb') as content:
+        hasher = hashlib.sha256()
+        hasher.update(content.read())
+        return hasher.hexdigest()
+
+
 def get_linef(fp: TextIO, line_no: int) -> str:
     """'fp' should be (readable) file object.
     Return the line content at line_no or an empty line
