@@ -21,7 +21,7 @@ from functools import partial
 from tu_collector import tu_collector
 
 from codechecker_analyzer import analyzer, analyzer_context, \
-    compilation_database
+    compilation_database, symbol_index
 from codechecker_analyzer.analyzers import analyzer_types, clangsa
 from codechecker_analyzer.arg import \
     OrderedCheckersAction, OrderedConfigAction, existing_abspath, \
@@ -1266,6 +1266,32 @@ def check_satisfied_capabilities(args):
         sys.exit(1)
 
 
+def __generate_symbol_index(args, actions, ctags) -> bool:
+    """
+    Write '<output_path>/symbols.json' for the analyzed build actions.
+    Returns False if the index could not be generated.
+    """
+    output = Path(args.output_path) / symbol_index.SYMBOLS_FILE_NAME
+    LOG.info("Generating symbol index with '%s'...", ctags.binary)
+
+    try:
+        stats = symbol_index.generate(actions, ctags, output, args.jobs)
+    except symbol_index.SymbolIndexError as ex:
+        LOG.error("Failed to generate the symbol index: %s", ex)
+        return False
+
+    LOG.info("Symbol index written to '%s': %d definition(s) in %d unique "
+             "file(s) from %d build action(s).",
+             output, stats.definitions, stats.indexes, stats.build_actions)
+    if stats.failed_dependency_actions:
+        LOG.warning("Header discovery failed for %d build action(s), the "
+                    "symbol index may be incomplete.",
+                    stats.failed_dependency_actions)
+    LOG.debug("Symbol index statistics: %s", stats)
+
+    return True
+
+
 def main(args):
     """
     Perform analysis on the given inputs. Possible inputs are a compilation
@@ -1313,6 +1339,17 @@ def main(args):
         LOG.error("The given output path is not a directory: " +
                   args.output_path)
         sys.exit(1)
+
+    # Validate the Ctags executable before the analysis starts so that a
+    # missing tool is reported early instead of after a long analysis.
+    ctags = None
+    if 'symbol_index' in args:
+        try:
+            ctags = symbol_index.Ctags.find(
+                args.ctags_binary if 'ctags_binary' in args else None)
+        except symbol_index.SymbolIndexError as ex:
+            LOG.error(ex)
+            sys.exit(1)
 
     if 'enable_all' in args:
         LOG.info("'--enable-all' was supplied for this analysis.")
@@ -1522,6 +1559,9 @@ def main(args):
         LOG.debug("Sending analyzer statistics finished.")
     except Exception:
         LOG.debug("Failed to send analyzer statistics!")
+
+    if ctags and not __generate_symbol_index(args, actions, ctags):
+        return 1
 
     # Generally exit status is set by sys.exit() call in CodeChecker. However,
     # exit code 3 has a special meaning: it returns when the underlying
