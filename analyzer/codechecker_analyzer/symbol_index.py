@@ -28,11 +28,15 @@ analyzer side. The pipeline is:
 """
 
 
+import json
 import os
 import shlex
+import shutil
+import subprocess
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
@@ -54,6 +58,23 @@ SCHEMA_VERSION = 1
 # that the build asked for explicitly. Dependencies under these directories
 # are indexed even if the directory is nested inside an implicit include root.
 EXPLICIT_INCLUDE_FLAGS = ('-I', '-isystem', '-iquote', '-idirafter')
+
+# CodeChecker (BuildAction.lang) -> Universal Ctags language names. Ctags is
+# always told the language explicitly, its extension based guess (e.g. '.h'
+# is C++) is never used. Ctags has no Objective-C++ parser; its Objective-C
+# parser is the closest match.
+CTAGS_LANGUAGES = {
+    'c': 'C',
+    'c++': 'C++',
+    'objective-c': 'ObjectiveC',
+    'objective-c++': 'ObjectiveC',
+}
+
+# Ctags fields the normalization relies on, by their long names as listed by
+# 'ctags --list-fields'. Every one of them must be supported by the executable
+# so that the emitted JSON has a known shape.
+CTAGS_FIELDS = ('name', 'input', 'line', 'end', 'kind', 'scope',
+                'scopeKind', 'signature', 'typeref', 'roles')
 
 
 class SymbolIndexError(Exception):
@@ -271,3 +292,267 @@ def group_by_identity(
         groups[(content_hash, index_input.language)].add(index_input.path)
 
     return {identity: sorted(paths) for identity, paths in groups.items()}
+
+
+@dataclass(frozen=True, order=True)
+class Definition:
+    """
+    A symbol definition in the application-owned schema. The field set is
+    language independent; 'kind' and 'scope_kind' are the long kind names of
+    the source language (e.g. 'function', 'class', 'namespace').
+    """
+    name: str
+    kind: str
+    line: int
+    end_line: int | None = None
+    scope: str | None = None
+    scope_kind: str | None = None
+    signature: str | None = None
+    typeref: str | None = None
+
+
+@dataclass
+class SymbolIndex:
+    """The definitions of one (content hash, language) identity."""
+    content_hash: str
+    language: str
+    paths: list[str]
+    definitions: list[Definition] = field(default_factory=list)
+
+
+@dataclass
+class IndexStatistics:
+    build_actions: int = 0
+    failed_dependency_actions: int = 0
+    raw_dependencies: int = 0
+    indexed_files: int = 0
+    indexes: int = 0
+    definitions: int = 0
+    dependency_seconds: float = 0.0
+    ctags_seconds: float = 0.0
+
+
+class Ctags:
+    """A validated Universal Ctags executable with JSON output support."""
+
+    def __init__(self, binary: str):
+        self.binary = binary
+
+    @staticmethod
+    def find(binary: str | None = None) -> 'Ctags':
+        """
+        Locate and validate the Ctags executable. 'binary' is an explicit
+        path or executable name; by default 'ctags' is looked up in PATH.
+        Raises SymbolIndexError with an actionable message if the executable
+        is missing, is not Universal Ctags or lacks the JSON output and the
+        fields the index relies on.
+        """
+        requested = binary or 'ctags'
+        resolved = shutil.which(requested)
+        if not resolved:
+            raise SymbolIndexError(
+                f"Universal Ctags executable '{requested}' was not found. "
+                "Install Universal Ctags (https://ctags.io) with JSON "
+                "support or give its path with --ctags-binary.")
+
+        ctags = Ctags(resolved)
+        version = ctags._run(['--version'])
+        if 'Universal Ctags' not in version:
+            raise SymbolIndexError(
+                f"'{resolved}' is not Universal Ctags (reported: "
+                f"'{version.splitlines()[0] if version else ''}'). "
+                "Exuberant Ctags and other variants have no JSON output; "
+                "install Universal Ctags or give its path with "
+                "--ctags-binary.")
+
+        features = ctags._run(['--list-features']).split()
+        if 'json' not in features:
+            raise SymbolIndexError(
+                f"'{resolved}' was built without JSON output support "
+                "(the 'json' feature is missing from --list-features). "
+                "Install a Universal Ctags build with libjansson support.")
+
+        fields = {line.split()[1] for line in
+                  ctags._run(['--list-fields']).splitlines()[1:]
+                  if line.split()[1:]}
+        missing = [f for f in CTAGS_FIELDS if f not in fields]
+        if missing:
+            raise SymbolIndexError(
+                f"'{resolved}' does not support the tag fields "
+                f"{', '.join(missing)} required by the symbol index. "
+                "Please upgrade Universal Ctags.")
+
+        return ctags
+
+    def _run(self, args: list[str], stdin: str | None = None) -> str:
+        try:
+            proc = subprocess.run(
+                [self.binary, *args],
+                input=stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                encoding='utf-8',
+                errors='replace',
+                check=False)
+        except OSError as ex:
+            raise SymbolIndexError(
+                f"Failed to execute '{self.binary}': {ex}") from ex
+
+        if proc.returncode != 0:
+            raise SymbolIndexError(
+                f"'{self.binary} {' '.join(args)}' failed with exit code "
+                f"{proc.returncode}: {proc.stderr.strip()}")
+
+        return proc.stdout
+
+    def command(self, ctags_language: str) -> list[str]:
+        """
+        Return the Ctags arguments used to tag files as 'ctags_language'.
+        The file list is read from the standard input, the tags are written
+        to the standard output as JSON lines. Compiler options are
+        deliberately not forwarded: Ctags does not preprocess and interprets
+        e.g. '-I' as "ignore identifiers". Only definitions are requested
+        (reference tags such as included headers are disabled).
+        """
+        return ['--options=NONE',
+                '--quiet=yes',
+                '--output-format=json',
+                '--sort=no',
+                '--extras=-r',
+                '--fields=+' + ''.join('{' + f + '}' for f in CTAGS_FIELDS),
+                '--language-force=' + ctags_language,
+                '-L', '-',
+                '-f', '-']
+
+    def tag_files(self, ctags_language: str,
+                  paths: Iterable[str]) -> dict[str, list[dict]]:
+        """
+        Run Ctags once over 'paths' as 'ctags_language' and return the raw
+        tag objects grouped by input file path.
+        """
+        paths = list(paths)
+        if not paths:
+            return {}
+
+        output = self._run(self.command(ctags_language),
+                           stdin='\n'.join(paths) + '\n')
+
+        tags: dict[str, list[dict]] = defaultdict(list)
+        for line in output.splitlines():
+            if not line:
+                continue
+            try:
+                tag = json.loads(line)
+            except json.JSONDecodeError as ex:
+                raise SymbolIndexError(
+                    f"Unexpected output from '{self.binary}': {ex}: "
+                    f"{line[:200]}") from ex
+
+            if tag.get('_type') == 'tag':
+                tags[tag['path']].append(tag)
+
+        return tags
+
+
+def normalize_tag(tag: dict) -> Definition | None:
+    """
+    Convert a raw Universal Ctags JSON tag into a Definition. Returns None
+    for tags that are not definitions (reference roles) or lack the
+    mandatory name, kind or line. Ctags specific fields that carry no
+    location information usable by CodeChecker (pattern, file scoping
+    marker, raw path) are dropped.
+    """
+    roles = tag.get('roles')
+    if roles and roles != 'def':
+        return None
+
+    name = tag.get('name')
+    kind = tag.get('kind')
+    line = tag.get('line')
+    if not name or not kind or not isinstance(line, int):
+        return None
+
+    end = tag.get('end')
+
+    return Definition(
+        name=name,
+        kind=kind,
+        line=line,
+        end_line=end if isinstance(end, int) else None,
+        scope=tag.get('scope') or None,
+        scope_kind=tag.get('scopeKind') or None,
+        signature=tag.get('signature') or None,
+        typeref=tag.get('typeref') or None)
+
+
+def build_indexes(groups: dict[tuple[str, str], list[str]],
+                  ctags: Ctags) -> list[SymbolIndex]:
+    """
+    Tag one representative file of every (content hash, language) identity
+    with Ctags, batched per language, and return the symbol indexes sorted
+    by identity with their definitions in source order.
+    """
+    representatives: dict[str, dict[str, tuple[str, str]]] = \
+        defaultdict(dict)  # language -> representative path -> identity
+    for (content_hash, language), paths in groups.items():
+        representatives[language][paths[0]] = (content_hash, language)
+
+    indexes: dict[tuple[str, str], SymbolIndex] = {
+        identity: SymbolIndex(identity[0], identity[1], paths)
+        for identity, paths in groups.items()}
+
+    for language in sorted(representatives):
+        ctags_language = CTAGS_LANGUAGES.get(language)
+        if not ctags_language:
+            LOG.warning("Symbol index: no Universal Ctags parser is mapped "
+                        "to language '%s', %d file(s) are not indexed.",
+                        language, len(representatives[language]))
+            continue
+
+        by_path = representatives[language]
+        tags = ctags.tag_files(ctags_language, sorted(by_path))
+        for path, identity in by_path.items():
+            definitions = filter(None, map(normalize_tag, tags.get(path, [])))
+            indexes[identity].definitions = sorted(set(definitions))
+
+    return [indexes[identity] for identity in sorted(indexes)]
+
+
+def to_json(indexes: list[SymbolIndex]) -> dict:
+    """Return the versioned 'symbols.json' document."""
+    return {
+        'version': SCHEMA_VERSION,
+        'indexes': [asdict(index) for index in indexes]
+    }
+
+
+def generate(actions: Iterable[BuildAction],
+             ctags: Ctags,
+             output_path: str | Path,
+             jobs: int = 1) -> IndexStatistics:
+    """
+    Generate the symbol index of the given build actions and write it to
+    'output_path'. Returns statistics of the run.
+    """
+    actions = list(actions)
+    stats = IndexStatistics(build_actions=len(actions))
+
+    start = time.time()
+    collected = collect_inputs(actions, jobs)
+    groups = group_by_identity(collected.inputs)
+    stats.dependency_seconds = time.time() - start
+    stats.failed_dependency_actions = collected.failed_actions
+    stats.raw_dependencies = collected.raw_dependency_count
+    stats.indexed_files = len(collected.inputs)
+
+    start = time.time()
+    indexes = build_indexes(groups, ctags)
+    stats.ctags_seconds = time.time() - start
+    stats.indexes = len(indexes)
+    stats.definitions = sum(len(index.definitions) for index in indexes)
+
+    with open(output_path, 'w', encoding='utf-8') as output:
+        json.dump(to_json(indexes), output, indent=2)
+        output.write('\n')
+
+    return stats
