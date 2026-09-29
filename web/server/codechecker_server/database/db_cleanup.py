@@ -27,7 +27,7 @@ from .run_db_model import \
     Comment, Checker, \
     File, FileContent, \
     Report, ReportAnalysisInfo, ReportPathDataFile, RunHistoryAnalysisInfo, \
-    RunLock
+    RunLock, RunSymbolFile, SymbolIndex
 from .config_db_model import Session as SessionRecord
 
 LOG = get_logger('server')
@@ -81,6 +81,12 @@ def remove_expired_run_locks(product):
 
 
 def remove_unused_files(product):
+    # A File is live while a report path or a run's symbol file membership
+    # references it. A SymbolIndex is live while a run references it or a
+    # live File still has its content (old file versions shown by resolved
+    # reports stay navigable). A FileContent is live while a File, an
+    # AnalysisInfoFile or a SymbolIndex references it.
+    #
     # File deletion is a relatively slow operation due to database cascades.
     # Removing files in big chunks prevents reaching a potential database
     # statement timeout. This hard-coded value is a safe choice according to
@@ -92,8 +98,9 @@ def remove_unused_files(product):
         LOG.debug("[%s] Garbage collection of dangling files started...",
                   product.endpoint)
         try:
-            files = session.query(ReportPathDataFile.c.file_id) \
-                .group_by(ReportPathDataFile.c.file_id)
+            files = union(
+                session.query(ReportPathDataFile.c.file_id),
+                session.query(RunSymbolFile.file_id))
 
             files_to_delete = session.query(File.id) \
                 .filter(File.id.notin_(files))
@@ -109,9 +116,21 @@ def remove_unused_files(product):
             if total_count:
                 LOG.debug("%d dangling files deleted.", total_count)
 
+            live_indexes = union(
+                session.query(RunSymbolFile.symbol_index_id),
+                session.query(SymbolIndex.id)
+                .join(File, File.content_hash == SymbolIndex.content_hash))
+
+            count = session.query(SymbolIndex) \
+                .filter(SymbolIndex.id.notin_(live_indexes)) \
+                .delete(synchronize_session=False)
+            if count:
+                LOG.debug("%d dangling symbol indexes deleted.", count)
+
             files = union(
                 session.query(File.content_hash),
-                session.query(AnalysisInfoFile.content_hash))
+                session.query(AnalysisInfoFile.content_hash),
+                session.query(SymbolIndex.content_hash))
 
             session.query(FileContent) \
                 .filter(FileContent.content_hash.notin_(files)) \
