@@ -31,7 +31,7 @@ from codechecker_api.python.shared.ttypes import \
     DBStatus, ErrorCode, RequestFailed
 from codechecker_api.python.DBAccess_v6 import ttypes
 
-from codechecker_common import skiplist_handler
+from codechecker_common import skiplist_handler, symbols_json
 from codechecker_common.logger import get_logger
 from codechecker_common.review_status_handler import ReviewStatusHandler, \
     SourceReviewStatus
@@ -56,6 +56,7 @@ from ..database.run_db_model import \
     SourceComponent, SourceComponentFile
 from ..metadata import checker_is_unavailable, MetadataInfoParser
 
+from . import symbol_index_store
 from .report_annotations import report_annotation_types
 from ..product import Product as ServerProduct
 from ..session_manager import SessionManager
@@ -720,6 +721,7 @@ class MassStoreRun:
         self.__graceful_cancel_if_requested = graceful_cancel
 
         self.__mips: dict[str, MetadataInfoParser] = {}
+        self.__symbol_indexes: list[symbols_json.SymbolIndex] = []
         self.__analysis_info: dict[str, AnalysisInfo] = {}
         self.__checker_row_cache: dict[tuple[str, str], Checker] = {}
         self.__duration: int = 0
@@ -1786,6 +1788,25 @@ class MassStoreRun:
                     source_root, filename_to_hash)
                 self.__add_blame_info(blame_root, filename_to_hash)
 
+            # Global, deduplicated symbol indexes. Their FileContent rows
+            # exist by now, and this must not run inside the run-scoped
+            # transaction below (see symbol_index_store).
+            with StepLog(self._name, "Store symbol indexes"):
+                self.__symbol_indexes = \
+                    symbol_index_store.load_symbol_indexes(report_dir)
+                if self.__symbol_indexes:
+                    stage_a = symbol_index_store.store_symbol_indexes(
+                        self.__product.session_factory,
+                        self.__symbol_indexes, self._name)
+                    LOG.info("[%s] Symbol indexes: %d in input, %d created, "
+                             "%d reused, %d skipped (no file content), "
+                             "%d definitions added in %d batch(es), "
+                             "%d retries, %.2f seconds.", self._name,
+                             stage_a.indexes_in_input, stage_a.created,
+                             stage_a.reused, stage_a.skipped_missing_content,
+                             stage_a.definitions_created, stage_a.batches,
+                             stage_a.retries, stage_a.seconds)
+
             run_history_time = datetime.now()
 
             with StepLog(self._name, "Parse 'metadata.json's"):
@@ -1820,6 +1841,18 @@ class MassStoreRun:
                         self.__store_reports(
                             session, report_dir, source_root, run_id,
                             file_path_to_id, run_history_time)
+
+                    with StepLog(self._name, "Store symbol file membership"):
+                        stage_b = symbol_index_store.replace_run_symbol_files(
+                            session, run_id, self.__symbol_indexes,
+                            file_path_to_id, self._trim_path_prefixes)
+                        LOG.info("[%s] Symbol file membership: %d file(s), "
+                                 "skipped %d (no File), %d (content "
+                                 "mismatch), %d (no index).", self._name,
+                                 stage_b.memberships,
+                                 stage_b.skipped_unknown_file,
+                                 stage_b.skipped_content_mismatch,
+                                 stage_b.skipped_missing_index)
 
                     self.__graceful_cancel_if_requested()
                     session.commit()
