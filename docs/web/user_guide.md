@@ -571,6 +571,30 @@ then the results of the analysis can be stored with this command:
 CodeChecker store ./my_results -n my_project
 ```
 
+#### Storing the symbol index
+
+If the analysis was run with `--symbol-index` (see the
+[analyzer user guide](../analyzer/user_guide.md#symbol-index)), the result
+directory contains a `symbols.json` symbol definition index. `store` ships it
+to the server together with the content of every indexed source file and
+header, even if no report refers to them, so the source and its definitions
+can be used for symbol navigation. The number of indexed files is printed in
+the storage statistics.
+
+Indexed files that do not exist any more or whose content changed since the
+analysis are reported with a warning and skipped, as are index entries the
+server cannot match with a stored file. Such problems never fail the storage.
+Invalid `symbols.json` files make `store` exit with an error.
+
+On the server, an index is stored once per file content and language
+(`symbol_indexes`, `symbol_definitions`) and shared between all runs and
+paths having that content. Each run additionally records which of its stored
+files carry which index (`run_symbol_files`). Storing to an existing run name
+replaces this set, so symbols of removed or changed files do not stay
+attached to the run; `--force` rebuilds it with the run. Indexes are removed
+by the server's start-up garbage collection when no run uses them and no
+stored file with that content exists any more.
+
 #### Format of `PRODUCT_URL`
 
 Several sub-commands, such as `store` and `cmd` need a connection specification

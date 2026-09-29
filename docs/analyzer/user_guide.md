@@ -1913,6 +1913,9 @@ and `typeref` are `null` when not known. The output is deterministic: indexes
 are sorted by content hash and language, paths are sorted and definitions are
 in source order.
 
+`CodeChecker store` uploads `symbols.json` together with the indexed files, see
+[the web user guide](../web/user_guide.md#storing-the-symbol-index).
+
 ### `parse`
 
 `parse` is used to read previously created machine-readable analysis results
