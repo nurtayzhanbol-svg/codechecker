@@ -52,7 +52,7 @@ except ImportError:
 
 from codechecker_client import client as libclient, product
 from codechecker_client.task_client import await_task_termination
-from codechecker_common import arg, logger, cmd_config
+from codechecker_common import arg, logger, cmd_config, symbols_json
 from codechecker_common.checker_labels import CheckerLabels
 from codechecker_common.compatibility.multiprocessing import Pool, cpu_count
 from codechecker_common.source_code_comment_handler import \
@@ -118,6 +118,7 @@ class StorageZipStatistics(report_statistics.Statistics):
         self.num_of_blame_information = 0
         self.num_of_source_files = 0
         self.num_of_source_files_with_source_code_comment = 0
+        self.num_of_symbol_indexed_files = 0
 
     def _write_summary(self, out=sys.stdout):
         """ Print summary. """
@@ -130,7 +131,9 @@ class StorageZipStatistics(report_statistics.Statistics):
             ["Number of source files with source code comments",
              str(self.num_of_source_files_with_source_code_comment)],
             ["Number of blame information files",
-             str(self.num_of_blame_information)]]
+             str(self.num_of_blame_information)],
+            ["Number of symbol indexed files",
+             str(self.num_of_symbol_indexed_files)]]
         out.write(twodim.to_table(statistics_rows, False))
         out.write("\n----=================----\n")
 
@@ -456,6 +459,39 @@ class ReportLimitExceedError(Exception):
         super().__init__(self, message)
 
 
+def collect_symbol_indexed_files(symbols_file: str) -> set[str]:
+    """
+    Return the source files referenced by a 'symbols.json' of an analysis
+    output directory. These files must be stored with their content so that
+    the server can attach the symbol index to them, even if no report refers
+    to them. Files that no longer exist or whose content changed since the
+    analysis are reported and left out: the server would not find their
+    indexed content anyway.
+    """
+    try:
+        indexes = symbols_json.load(symbols_file)
+    except symbols_json.SymbolsJsonError as ex:
+        LOG.error("Invalid symbol index, re-run 'CodeChecker analyze "
+                  "--symbol-index' or remove the file: %s", ex)
+        sys.exit(1)
+
+    files = set()
+    for index in indexes:
+        for path in index.paths:
+            if not os.path.isfile(path):
+                LOG.warning("Symbol indexed file '%s' does not exist, its "
+                            "symbols are not stored.", path)
+            elif get_file_content_hash(path) != index.content_hash:
+                LOG.warning("Symbol indexed file '%s' changed since the "
+                            "analysis, its symbols are not stored.", path)
+            else:
+                files.add(path)
+
+    LOG.info("Found symbol index %s with %d file(s).", symbols_file,
+             len(files))
+    return files
+
+
 def assemble_zip(inputs,
                  zip_file,
                  client,
@@ -473,10 +509,18 @@ def assemble_zip(inputs,
     """
     files_to_compress: dict[str, set] = defaultdict(set)
     analyzer_result_file_paths = []
+    symbol_indexed_files: set[str] = set()
     stats = StorageZipStatistics()
 
     for dir_path, file_paths in report_file.analyzer_result_files(inputs):
         analyzer_result_file_paths.extend(file_paths)
+
+        symbols_file_path = os.path.join(
+            dir_path, symbols_json.SYMBOLS_FILE_NAME)
+        if os.path.exists(symbols_file_path):
+            files_to_compress[dir_path].add(symbols_file_path)
+            symbol_indexed_files.update(
+                collect_symbol_indexed_files(symbols_file_path))
 
         metadata_file_path = os.path.join(dir_path, 'metadata.json')
         if os.path.exists(metadata_file_path):
@@ -557,6 +601,9 @@ def assemble_zip(inputs,
     if not file_paths:
         LOG.warning("There is no report to store. After uploading these "
                     "results the previous reports become resolved.")
+
+    stats.num_of_symbol_indexed_files = len(symbol_indexed_files)
+    file_paths.update(symbol_indexed_files)
 
     hash_to_file: dict[str, str] = {}
 
