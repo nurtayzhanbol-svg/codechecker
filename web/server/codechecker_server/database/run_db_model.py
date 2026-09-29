@@ -17,8 +17,8 @@ import hashlib
 import zlib
 
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum, \
-    ForeignKey, Integer, LargeBinary, MetaData, String, UniqueConstraint, \
-    Table, Text, JSON, case
+    ForeignKey, Index, Integer, LargeBinary, MetaData, String, \
+    UniqueConstraint, Table, Text, JSON, case
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
@@ -336,6 +336,110 @@ class File(Base):
         self.content_hash = content_hash
         self.remote_url = remote_url
         self.tracking_branch = tracking_branch
+
+
+class SymbolIndex(Base):
+    """
+    A product-global, deduplicated symbol index of one file content
+    interpreted as one language (the symbols.json identity produced by
+    'CodeChecker analyze --symbol-index'). It does not belong to a run; runs
+    reference it through RunSymbolFile.
+    """
+    __tablename__ = 'symbol_indexes'
+
+    id = Column(Integer, autoincrement=True, primary_key=True)
+    content_hash = Column(String,
+                          ForeignKey('file_contents.content_hash',
+                                     deferrable=True,
+                                     initially="DEFERRED",
+                                     ondelete='CASCADE'),
+                          nullable=False, index=True)
+    # Phase 1 vocabulary ('c', 'c++', ...), deliberately not an Enum.
+    language = Column(String, nullable=False)
+
+    __table_args__ = (UniqueConstraint('content_hash', 'language'),)
+
+    def __init__(self, content_hash: str, language: str):
+        self.content_hash = content_hash
+        self.language = language
+
+
+class SymbolDefinition(Base):
+    """
+    One candidate definition found by Universal Ctags in a SymbolIndex. Its
+    lifetime follows the SymbolIndex (ON DELETE CASCADE), it has no GC of
+    its own.
+    """
+    __tablename__ = 'symbol_definitions'
+
+    id = Column(Integer, autoincrement=True, primary_key=True)
+    symbol_index_id = Column(Integer,
+                             ForeignKey('symbol_indexes.id',
+                                        deferrable=True,
+                                        initially="DEFERRED",
+                                        ondelete='CASCADE'),
+                             nullable=False)
+    name = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)
+    line = Column(Integer, nullable=False)
+    end_line = Column(Integer, nullable=True)
+    scope = Column(String, nullable=True)
+    scope_kind = Column(String, nullable=True)
+    signature = Column(String, nullable=True)
+    typeref = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index('ix_symbol_definitions_symbol_index_id_name',
+              'symbol_index_id', 'name'),
+    )
+
+    def __init__(self, symbol_index_id: int, name: str, kind: str, line: int,
+                 end_line: int | None = None, scope: str | None = None,
+                 scope_kind: str | None = None, signature: str | None = None,
+                 typeref: str | None = None):
+        self.symbol_index_id = symbol_index_id
+        self.name = name
+        self.kind = kind
+        self.line = line
+        self.end_line = end_line
+        self.scope = scope
+        self.scope_kind = scope_kind
+        self.signature = signature
+        self.typeref = typeref
+
+
+class RunSymbolFile(Base):
+    """
+    "In this Run, this concrete File (path + content) is represented by this
+    language-specific SymbolIndex." The rows of a run form the CURRENT
+    indexed-file snapshot of that run and are replaced as a set on every
+    store; they are not history.
+    """
+    __tablename__ = 'run_symbol_files'
+
+    run_id = Column(Integer,
+                    ForeignKey('runs.id',
+                               deferrable=True,
+                               initially="DEFERRED",
+                               ondelete='CASCADE'),
+                    primary_key=True)
+    file_id = Column(Integer,
+                     ForeignKey('files.id',
+                                deferrable=True,
+                                initially="DEFERRED",
+                                ondelete='CASCADE'),
+                     primary_key=True, index=True)
+    symbol_index_id = Column(Integer,
+                             ForeignKey('symbol_indexes.id',
+                                        deferrable=True,
+                                        initially="DEFERRED",
+                                        ondelete='CASCADE'),
+                             primary_key=True, index=True)
+
+    def __init__(self, run_id: int, file_id: int, symbol_index_id: int):
+        self.run_id = run_id
+        self.file_id = file_id
+        self.symbol_index_id = symbol_index_id
 
 
 ReportPathDataFile = Table(
