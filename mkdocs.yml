@@ -11,4 +11,6 @@ nav:
   - 'Quick Howto': usage.md
   - 'Analyzer User Guide': analyzer/user_guide.md
   - 'Web User Guide': web/user_guide.md
+  - 'Symbol index / Jump-to-definition':
+    - 'Architecture': symbol-index/architecture.md
 
