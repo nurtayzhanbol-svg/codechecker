@@ -800,6 +800,24 @@ place of error. This path can be checked in this bug path view.
 
 ![Bug path](images/report/bug_path.png)
 
+## Jump to definition
+If the run was analyzed with `--symbol-index`, you can look up the definition
+of a symbol in C/C++ source files: `Ctrl`+click (`Cmd`+click on macOS) an
+identifier in the file view.
+
+- If exactly one definition is found, its file is opened at the definition.
+- If there are several candidates (e.g. overloads or conditional
+  definitions), a menu lists them with their scope, signature, kind, file,
+  line and language; select one to open it. Definitions found in the same
+  header indexed both as C and C++ are shown as one entry.
+- If nothing is found, the menu says so.
+
+The lookup is name-based: it lists every definition with the same name in the
+current files of the report's run, and does not resolve overloads, types or
+scopes like a compiler would. Names inside comments, strings and macro
+definition bodies are not looked up. Use `Back to report` to return to the
+report location.
+
 ## Comment
 There are 2 types of comments:
 - `user based` comments.
