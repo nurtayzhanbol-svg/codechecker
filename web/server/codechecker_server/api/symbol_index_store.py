@@ -316,13 +316,16 @@ class DefinitionCandidate:
     typeref: str | None
 
 
-def find_definitions(session: SA_Session, run_id: int,
-                     name: str) -> list[DefinitionCandidate]:
+def find_definitions(session: SA_Session, run_id: int, name: str,
+                     limit: int | None = None) -> list[DefinitionCandidate]:
     """
     Candidate definitions of symbol 'name' in the CURRENT indexed files of
-    run 'run_id' (through RunSymbolFile). Backend building block of the
-    future jump-to-definition API; results are candidates, the same name
-    may be defined in several files or several '#if' branches.
+    run 'run_id' (through RunSymbolFile). Results are candidates, the same
+    name may be defined in several files or several '#if' branches.
+
+    The order is total (so 'limit' always keeps the same rows) but it is not
+    a relevance ranking. At most 'limit' candidates are returned if it is
+    given.
     """
     query = session.query(
         File.id, File.filepath, SymbolIndex.language,
@@ -338,7 +341,11 @@ def find_definitions(session: SA_Session, run_id: int,
         .join(File, File.id == RunSymbolFile.file_id) \
         .filter(RunSymbolFile.run_id == run_id,
                 SymbolDefinition.name == name) \
-        .order_by(File.filepath, SymbolIndex.language, SymbolDefinition.line)
+        .order_by(File.filepath, SymbolIndex.language, SymbolDefinition.line,
+                  SymbolDefinition.kind, File.id, SymbolDefinition.id)
+
+    if limit is not None:
+        query = query.limit(limit)
 
     return [DefinitionCandidate(*row) for row in query]
 
