@@ -188,27 +188,7 @@
                   </v-col>
 
                   <v-col
-                    v-if="definitionNavigationActive"
-                    class="py-0 px-1"
-                    cols="auto"
-                    align-self="center"
-                  >
-                    <v-btn
-                      class="back-to-report-btn text-none px-1"
-                      color="primary"
-                      variant="text"
-                      density="compact"
-                      size="small"
-                      prepend-icon="mdi-arrow-left"
-                      title="Back to report"
-                      @click="backToReport"
-                    >
-                      Back to report
-                    </v-btn>
-                  </v-col>
-
-                  <v-col
-                    class="file-path file-path-col py-0 pl-1"
+                    class="file-path py-0 pl-1"
                     align-self="center"
                   >
                     <copy-btn
@@ -253,6 +233,17 @@
                   ]"
                 >
                   <div ref="editorContainer" class="editor-container" />
+                  <v-btn
+                    v-if="definitionNavigationActive"
+                    class="back-to-report-btn text-none"
+                    color="primary"
+                    variant="tonal"
+                    size="small"
+                    prepend-icon="mdi-arrow-left"
+                    @click="backToReport"
+                  >
+                    Back to report
+                  </v-btn>
                   <v-menu
                     v-model="definitionMenu.open"
                     :target="definitionMenu.target"
@@ -1284,10 +1275,6 @@ function truncate(text, length) {
         content: '\200e';
       }
     }
-
-    .file-path-col {
-      min-width: 12em;
-    }
   }
 
   .editor {
@@ -1314,6 +1301,15 @@ function truncate(text, length) {
 
     :deep(.cm-searchMatch-selected) {
       background-color: green;
+    }
+
+    position: relative;
+
+    .back-to-report-btn {
+      position: absolute;
+      top: 6px;
+      right: 24px;
+      z-index: 10;
     }
   }
 }
