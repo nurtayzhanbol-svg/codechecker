@@ -222,17 +222,6 @@
                       />
                     </v-row>
                   </v-col>
-                </v-row>
-
-                <v-row
-                  v-fill-height
-                  :class="[
-                    'editor',
-                    'ma-0',
-                    enableBlameView ? 'blame' : undefined
-                  ]"
-                >
-                  <div ref="editorContainer" class="editor-container" />
                   <v-btn
                     v-if="definitionNavigationActive"
                     class="back-to-report-btn text-none"
@@ -244,6 +233,17 @@
                   >
                     Back to report
                   </v-btn>
+                </v-row>
+
+                <v-row
+                  v-fill-height
+                  :class="[
+                    'editor',
+                    'ma-0',
+                    enableBlameView ? 'blame' : undefined
+                  ]"
+                >
+                  <div ref="editorContainer" class="editor-container" />
                   <v-menu
                     v-model="definitionMenu.open"
                     :target="definitionMenu.target"
@@ -1257,6 +1257,14 @@ function truncate(text, length) {
 
   .header {
     background-color: #f7f7f7;
+    position: relative;
+
+    .back-to-report-btn {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 24px;
+      z-index: 10;
+    }
 
     .file-path {
       font-family: monospace;
@@ -1301,15 +1309,6 @@ function truncate(text, length) {
 
     :deep(.cm-searchMatch-selected) {
       background-color: green;
-    }
-
-    position: relative;
-
-    .back-to-report-btn {
-      position: absolute;
-      top: 6px;
-      right: 24px;
-      z-index: 10;
     }
   }
 }
