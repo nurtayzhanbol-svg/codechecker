@@ -382,7 +382,7 @@ import {
   candidateLabel,
   clampLine,
   collapseCandidates,
-  createRequestSequence,
+  createNavigationTracker,
   definitionResultKind,
   isDefinitionClick,
   isDefinitionLookupSupported,
@@ -429,7 +429,7 @@ const definitionMenu = ref({
   symbol: null,
   groups: []
 });
-const definitionRequests = createRequestSequence();
+const navigation = createNavigationTracker();
 const isMac = isMacPlatform(navigator);
 
 const reviewStatus = useReviewStatus();
@@ -689,6 +689,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  navigation.invalidate();
   document.removeEventListener("keydown", findText);
 });
 
@@ -721,7 +722,7 @@ function updateCommentCount(report) {
 }
 
 async function loadReportStep(_report, { stepId, fileId, startLine }) {
-  resetDefinitionNavigation();
+  const _intent = resetDefinitionNavigation();
 
   if (!report.value ||
       !report.value.reportId.equals(_report.reportId) ||
@@ -730,8 +731,9 @@ async function loadReportStep(_report, { stepId, fileId, startLine }) {
   ) {
     report.value = _report;
 
-    await setSourceFileData(fileId);
+    if (!await setSourceFileData(fileId, _intent.isCurrent)) return;
     await drawBugPath();
+    if (!_intent.isCurrent()) return;
   }
 
   const _line = startLine.toNumber();
@@ -745,11 +747,12 @@ async function loadReport(_report) {
   if (!_report)
     return;
 
-  resetDefinitionNavigation();
+  const _intent = resetDefinitionNavigation();
   report.value = _report;
 
-  await setSourceFileData(_report.fileId);
+  if (!await setSourceFileData(_report.fileId, _intent.isCurrent)) return;
   await drawBugPath();
+  if (!_intent.isCurrent()) return;
 
   const _line = _report.line.toNumber();
   jumpTo(_line, 0);
@@ -793,13 +796,15 @@ function highlightCurrentBubble(id) {
   });
 }
 
-async function setSourceFileData(fileId) {
+async function setSourceFileData(fileId, isCurrent = () => true) {
   const _sourceFile = await new Promise((resolve, reject) => {
     ccService.getClient().getSourceFileData(fileId, true,
       Encoding.DEFAULT, handleThriftError(_sourceFile => {
         resolve(_sourceFile);
       }, rejectWithError(reject)));
   });
+
+  if (!isCurrent()) return false;
 
   sourceFile.value = _sourceFile;
   editor.value.dispatch({
@@ -816,6 +821,8 @@ async function setSourceFileData(fileId) {
   if (enableBlameView.value) {
     gitBlame.loadBlameView();
   }
+
+  return true;
 }
 
 function resetJsPlumb() {
@@ -1165,7 +1172,7 @@ function onEditorMouseDown(event, view) {
 }
 
 async function goToDefinition(symbolName, target) {
-  const _requestId = definitionRequests.next();
+  const _lookup = navigation.startLookup();
   definitionMenu.value.open = false;
 
   let _candidates;
@@ -1176,7 +1183,7 @@ async function goToDefinition(symbolName, target) {
     return;
   }
 
-  if (!definitionRequests.isLatest(_requestId)) return;
+  if (!_lookup.isCurrent()) return;
 
   const _groups = collapseCandidates(_candidates);
   if (definitionResultKind(_groups) === "navigate") {
@@ -1196,12 +1203,14 @@ async function goToDefinition(symbolName, target) {
 }
 
 async function navigateToDefinition(target) {
+  const _intent = navigation.startDefinitionNavigation();
   definitionMenu.value.open = false;
   loading.value = true;
 
   try {
-    await setSourceFileData(target.fileId);
+    if (!await setSourceFileData(target.fileId, _intent.isCurrent)) return;
     await drawBugPath();
+    if (!_intent.isCurrent()) return;
 
     const _line = clampLine(target.line, editor.value.state.doc.lines);
     jumpTo(_line, 0);
@@ -1209,19 +1218,18 @@ async function navigateToDefinition(target) {
   } catch {
     // The error is already shown by rejectWithError().
   } finally {
-    loading.value = false;
+    if (_intent.ownsView()) loading.value = false;
   }
 }
 
-async function backToReport() {
-  await init(props.treeItem);
-  definitionNavigationActive.value = false;
+function backToReport() {
+  return init(props.treeItem);
 }
 
 function resetDefinitionNavigation() {
-  definitionRequests.next();
   definitionMenu.value.open = false;
   definitionNavigationActive.value = false;
+  return navigation.startReportLoad();
 }
 
 function confirmReviewStatusChange(comment, status, author) {

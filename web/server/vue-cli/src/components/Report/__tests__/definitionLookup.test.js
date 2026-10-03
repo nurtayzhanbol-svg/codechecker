@@ -5,6 +5,7 @@ import {
   candidateLabel,
   clampLine,
   collapseCandidates,
+  createNavigationTracker,
   createRequestSequence,
   definitionResultKind,
   isDefinitionClick,
@@ -238,5 +239,165 @@ describe("createRequestSequence", () => {
     const second = seq.next();
     expect(seq.isLatest(second)).toBe(true);
     expect(seq.isLatest(first)).toBe(false);
+  });
+});
+
+describe("createNavigationTracker", () => {
+  test("a newer definition navigation supersedes an older one", () => {
+    const nav = createNavigationTracker();
+    const a = nav.startDefinitionNavigation();
+    const b = nav.startDefinitionNavigation();
+    expect(a.isCurrent()).toBe(false);
+    expect(a.ownsView()).toBe(false);
+    expect(b.isCurrent()).toBe(true);
+    expect(b.ownsView()).toBe(true);
+  });
+
+  test("a report switch supersedes a pending definition navigation", () => {
+    const nav = createNavigationTracker();
+    const jump = nav.startDefinitionNavigation();
+    const report = nav.startReportLoad();
+    expect(jump.isCurrent()).toBe(false);
+    expect(jump.ownsView()).toBe(false);
+    expect(report.isCurrent()).toBe(true);
+  });
+
+  test("Back supersedes a pending jump started from a destination", () => {
+    const nav = createNavigationTracker();
+    const first = nav.startDefinitionNavigation();
+    expect(first.isCurrent()).toBe(true);
+    const second = nav.startDefinitionNavigation();
+    const back = nav.startReportLoad();
+    expect(second.isCurrent()).toBe(false);
+    expect(back.isCurrent()).toBe(true);
+    expect(back.ownsView()).toBe(true);
+  });
+
+  test("a newer definition navigation supersedes a pending report load", () => {
+    const nav = createNavigationTracker();
+    const report = nav.startReportLoad();
+    const jump = nav.startDefinitionNavigation();
+    expect(report.isCurrent()).toBe(false);
+    expect(jump.isCurrent()).toBe(true);
+  });
+
+  test("a newer lookup supersedes a navigation, not a report load", () => {
+    const nav = createNavigationTracker();
+    const report = nav.startReportLoad();
+    const jump = nav.startDefinitionNavigation();
+    const lookup = nav.startLookup();
+    expect(jump.isCurrent()).toBe(false);
+    // No newer source replacement started, so the jump clears loading.
+    expect(jump.ownsView()).toBe(true);
+    expect(lookup.isCurrent()).toBe(true);
+
+    const nav2 = createNavigationTracker();
+    const report2 = nav2.startReportLoad();
+    nav2.startLookup();
+    expect(report2.isCurrent()).toBe(true);
+    expect(report.isCurrent()).toBe(false);
+  });
+
+  test("a report switch supersedes a pending lookup", () => {
+    const nav = createNavigationTracker();
+    const lookup = nav.startLookup();
+    nav.startReportLoad();
+    expect(lookup.isCurrent()).toBe(false);
+  });
+
+  test("invalidate() supersedes every pending intent", () => {
+    const nav = createNavigationTracker();
+    const lookup = nav.startLookup();
+    const jump = nav.startDefinitionNavigation();
+    const report = nav.startReportLoad();
+    nav.invalidate();
+    expect(lookup.isCurrent()).toBe(false);
+    expect(jump.isCurrent()).toBe(false);
+    expect(report.isCurrent()).toBe(false);
+  });
+});
+
+// Mirrors the guarded flow of Report.vue: an async source load may only
+// commit while its intent is current, and only the latest source
+// replacement clears the loading state.
+describe("guarded navigation with late responses", () => {
+  function deferred() {
+    let resolve;
+    const promise = new Promise(r => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  function createView() {
+    const nav = createNavigationTracker();
+    const view = { shown: "report-1", back: false, loading: false };
+
+    async function load(intent, source, pending, back) {
+      view.loading = true;
+      try {
+        await pending;
+        if (!intent.isCurrent()) return;
+        view.shown = source;
+        view.back = back;
+      } finally {
+        if (intent.ownsView()) view.loading = false;
+      }
+    }
+
+    return {
+      view,
+      jump: (source, pending) =>
+        load(nav.startDefinitionNavigation(), source, pending, true),
+      report: (source, pending) => {
+        view.back = false;
+        return load(nav.startReportLoad(), source, pending, false);
+      }
+    };
+  }
+
+  test("report switch wins over a late definition response", async () => {
+    const { view, jump, report } = createView();
+    const a = deferred();
+    const pendingA = jump("target_a", a.promise);
+    await report("report-2", Promise.resolve());
+    expect(view).toEqual({ shown: "report-2", back: false, loading: false });
+    a.resolve();
+    await pendingA;
+    expect(view).toEqual({ shown: "report-2", back: false, loading: false });
+  });
+
+  test("newer jump wins over a late older jump", async () => {
+    const { view, jump } = createView();
+    const a = deferred();
+    const pendingA = jump("target_a", a.promise);
+    await jump("target_b", Promise.resolve());
+    a.resolve();
+    await pendingA;
+    expect(view).toEqual({ shown: "target_b", back: true, loading: false });
+  });
+
+  test("Back wins over a late destination response", async () => {
+    const { view, jump, report } = createView();
+    await jump("target_b", Promise.resolve());
+    const late = deferred();
+    const pending = jump("util_h", late.promise);
+    await report("report-1", Promise.resolve());
+    expect(view).toEqual({ shown: "report-1", back: false, loading: false });
+    late.resolve();
+    await pending;
+    expect(view).toEqual({ shown: "report-1", back: false, loading: false });
+  });
+
+  test("an old completion does not clear loading of a newer one", async () => {
+    const { view, jump } = createView();
+    const a = deferred();
+    const b = deferred();
+    const pendingA = jump("target_a", a.promise);
+    const pendingB = jump("target_b", b.promise);
+    a.resolve();
+    await pendingA;
+    expect(view.loading).toBe(true);
+    b.resolve();
+    await pendingB;
+    expect(view).toEqual({ shown: "target_b", back: true, loading: false });
   });
 });
