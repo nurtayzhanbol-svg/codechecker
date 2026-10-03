@@ -150,10 +150,59 @@ function createRequestSequence() {
   };
 }
 
+/**
+ * Tracks the user's navigation intents in the report viewer. Every intent
+ * returns a guard; an async step may modify the view only while its guard
+ * still holds.
+ *
+ * - startLookup(): a definition lookup. Superseded by any later intent.
+ * - startDefinitionNavigation(): replaces the source with a definition.
+ *   Superseded by any later intent.
+ * - startReportLoad(): (re)loads the report, also used by Back.
+ *   Superseded by a later report load or definition navigation, but not by
+ *   a lookup, which leaves the shown source untouched until it navigates.
+ *
+ * isCurrent() tells whether the intent may still modify the view.
+ * ownsView() tells whether it is the latest operation replacing the
+ * source, i.e. the one responsible for clearing the loading state.
+ */
+function createNavigationTracker() {
+  const lookups = createRequestSequence();
+  const views = createRequestSequence();
+
+  return {
+    startLookup() {
+      const _lookup = lookups.next();
+      return { isCurrent: () => lookups.isLatest(_lookup) };
+    },
+    startDefinitionNavigation() {
+      const _lookup = lookups.next();
+      const _view = views.next();
+      return {
+        isCurrent: () => lookups.isLatest(_lookup) && views.isLatest(_view),
+        ownsView: () => views.isLatest(_view)
+      };
+    },
+    startReportLoad() {
+      lookups.next();
+      const _view = views.next();
+      return {
+        isCurrent: () => views.isLatest(_view),
+        ownsView: () => views.isLatest(_view)
+      };
+    },
+    invalidate() {
+      lookups.next();
+      views.next();
+    }
+  };
+}
+
 export {
   candidateLabel,
   clampLine,
   collapseCandidates,
+  createNavigationTracker,
   createRequestSequence,
   definitionResultKind,
   isDefinitionClick,
