@@ -568,6 +568,66 @@ class SymbolIndexStoreTest(unittest.TestCase):
         self.assertEqual(c1[0].language, 'c')
         self.assertEqual(none, [])
 
+    def test_find_definitions_limit_keeps_the_first_rows_in_order(self):
+        self.add_content(H_A)
+        run_id = self.add_run('r')
+        idx = [index(H_A, 'c', ['/p/a.c'],
+                     [definition('f', 9), definition('f', 2),
+                      definition('f', 5)])]
+        self.stage_a(idx)
+        self.stage_b(run_id, idx, self.add_files({'/p/a.c': H_A}))
+
+        with self.session_factory() as session:
+            unlimited = sis.find_definitions(session, run_id, 'f')
+            limited = sis.find_definitions(session, run_id, 'f', limit=2)
+            unknown = sis.find_definitions(session, run_id, 'g', limit=2)
+        self.assertEqual([c.line for c in unlimited], [2, 5, 9])
+        self.assertEqual([c.line for c in limited], [2, 5])
+        self.assertEqual(unknown, [])
+
+    def test_find_definitions_orders_same_line_ties_totally(self):
+        self.add_content(H_A, H_B)
+        run_id = self.add_run('r')
+        same_line = [
+            symbols_json.Definition(name='f', kind='variable', line=3,
+                                    scope='a', scope_kind='namespace'),
+            symbols_json.Definition(name='f', kind='variable', line=3),
+            symbols_json.Definition(name='f', kind='function', line=3)]
+        idx = [index(H_A, 'c++', ['/p/a.cpp'], same_line),
+               index(H_B, 'c++', ['/p/a.cpp'], same_line)]
+        self.stage_a(idx)
+
+        # The same path with two contents in one run only differs in File.id.
+        with self.session_factory() as session:
+            files = [File('/p/a.cpp', h, None, None) for h in (H_A, H_B)]
+            session.add_all(files)
+            session.flush()
+            for f in files:
+                index_id = session.query(SymbolIndex.id).filter(
+                    SymbolIndex.content_hash == f.content_hash).scalar()
+                session.add(RunSymbolFile(run_id=run_id, file_id=f.id,
+                                          symbol_index_id=index_id))
+            file_ids = [f.id for f in files]
+            session.commit()
+
+        with self.session_factory() as session:
+            rows = sis.find_definitions(session, run_id, 'f')
+            again = sis.find_definitions(session, run_id, 'f')
+            first_two = sis.find_definitions(session, run_id, 'f', limit=2)
+
+        self.assertEqual([(c.kind, c.file_id) for c in rows],
+                         [('function', file_ids[0]),
+                          ('function', file_ids[1]),
+                          ('variable', file_ids[0]),
+                          ('variable', file_ids[0]),
+                          ('variable', file_ids[1]),
+                          ('variable', file_ids[1])])
+        # Equal kind and File: SymbolDefinition.id, i.e. stored order.
+        self.assertEqual([c.scope for c in rows if c.kind == 'variable'],
+                         ['a', None, 'a', None])
+        self.assertEqual(rows, again)
+        self.assertEqual(first_two, rows[:2])
+
     # -- load_symbol_indexes -------------------------------------------------
 
     def test_load_symbol_indexes_merges_report_directories(self):
