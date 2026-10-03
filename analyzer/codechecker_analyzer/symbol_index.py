@@ -294,7 +294,7 @@ def group_by_identity(
     return {identity: sorted(paths) for identity, paths in groups.items()}
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class Definition:
     """
     A symbol definition in the application-owned schema. The field set is
@@ -485,12 +485,33 @@ def normalize_tag(tag: dict) -> Definition | None:
         typeref=tag.get('typeref') or None)
 
 
+def _optional_sort_key(value) -> tuple:
+    """Sort key part for a nullable field: None sorts before any value."""
+    return (0,) if value is None else (1, value)
+
+
+def _definition_sort_key(definition: Definition) -> tuple:
+    """
+    Source order: by line, then by every other field so that the order of
+    definitions on the same line is deterministic as well.
+    """
+    return (definition.line,
+            definition.name,
+            definition.kind,
+            _optional_sort_key(definition.end_line),
+            _optional_sort_key(definition.scope),
+            _optional_sort_key(definition.scope_kind),
+            _optional_sort_key(definition.signature),
+            _optional_sort_key(definition.typeref))
+
+
 def build_indexes(groups: dict[tuple[str, str], list[str]],
                   ctags: Ctags) -> list[SymbolIndex]:
     """
     Tag one representative file of every (content hash, language) identity
     with Ctags, batched per language, and return the symbol indexes sorted
-    by identity with their definitions in source order.
+    by identity with their definitions in source order (by line, with
+    deterministic tie-breakers).
     """
     representatives: dict[str, dict[str, tuple[str, str]]] = \
         defaultdict(dict)  # language -> representative path -> identity
@@ -513,7 +534,8 @@ def build_indexes(groups: dict[tuple[str, str], list[str]],
         tags = ctags.tag_files(ctags_language, sorted(by_path))
         for path, identity in by_path.items():
             definitions = filter(None, map(normalize_tag, tags.get(path, [])))
-            indexes[identity].definitions = sorted(set(definitions))
+            indexes[identity].definitions = sorted(
+                set(definitions), key=_definition_sort_key)
 
     return [indexes[identity] for identity in sorted(indexes)]
 
