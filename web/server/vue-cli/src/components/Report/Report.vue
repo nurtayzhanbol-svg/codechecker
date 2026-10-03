@@ -194,11 +194,13 @@
                     align-self="center"
                   >
                     <v-btn
-                      class="back-to-report-btn"
+                      class="back-to-report-btn text-none px-1"
                       color="primary"
-                      variant="outlined"
-                      size="x-small"
+                      variant="text"
+                      density="compact"
+                      size="small"
                       prepend-icon="mdi-arrow-left"
+                      title="Back to report"
                       @click="backToReport"
                     >
                       Back to report
@@ -206,7 +208,7 @@
                   </v-col>
 
                   <v-col
-                    class="file-path py-0 pl-1"
+                    class="file-path file-path-col py-0 pl-1"
                     align-self="center"
                   >
                     <copy-btn
@@ -1281,6 +1283,10 @@ function truncate(text, length) {
       &::before {
         content: '\200e';
       }
+    }
+
+    .file-path-col {
+      min-width: 12em;
     }
   }
 
