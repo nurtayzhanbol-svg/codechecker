@@ -11,4 +11,10 @@ nav:
   - 'Quick Howto': usage.md
   - 'Analyzer User Guide': analyzer/user_guide.md
   - 'Web User Guide': web/user_guide.md
+  - 'Symbol index / Jump-to-definition':
+    - 'How it works': symbol-index/how-it-works.md
+    - 'Architecture': symbol-index/architecture.md
+    - 'Design decisions': symbol-index/decisions.md
+    - 'Study guide': symbol-index/STUDY-GUIDE.md
+    - 'Defense questions': symbol-index/defense-questions.md
 
