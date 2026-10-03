@@ -188,6 +188,24 @@
                   </v-col>
 
                   <v-col
+                    v-if="definitionNavigationActive"
+                    class="py-0 px-1"
+                    cols="auto"
+                    align-self="center"
+                  >
+                    <v-btn
+                      class="back-to-report-btn"
+                      color="primary"
+                      variant="outlined"
+                      size="x-small"
+                      prepend-icon="mdi-arrow-left"
+                      @click="backToReport"
+                    >
+                      Back to report
+                    </v-btn>
+                  </v-col>
+
+                  <v-col
                     class="file-path py-0 pl-1"
                     align-self="center"
                   >
@@ -233,6 +251,44 @@
                   ]"
                 >
                   <div ref="editorContainer" class="editor-container" />
+                  <v-menu
+                    v-model="definitionMenu.open"
+                    :target="definitionMenu.target"
+                    location="bottom start"
+                  >
+                    <v-list
+                      class="definition-candidates"
+                      density="compact"
+                    >
+                      <v-list-item
+                        v-if="!definitionMenu.groups.length"
+                        class="no-definition"
+                        disabled
+                      >
+                        <v-list-item-title>
+                          No definition found for
+                          "{{ definitionMenu.symbol }}"
+                        </v-list-item-title>
+                      </v-list-item>
+                      <v-list-item
+                        v-for="(group, idx) in definitionMenu.groups"
+                        :key="idx"
+                        class="definition-candidate"
+                        @click="navigateToDefinition(group)"
+                      >
+                        <v-list-item-title
+                          :title="group.label.tooltip"
+                        >
+                          {{ group.label.title }}
+                        </v-list-item-title>
+                        <v-list-item-subtitle
+                          :title="group.label.tooltip"
+                        >
+                          {{ group.label.subtitle }}
+                        </v-list-item-subtitle>
+                      </v-list-item>
+                    </v-list>
+                  </v-menu>
                 </v-row>
               </v-container>
             </v-col>
@@ -304,6 +360,8 @@ import { useDateUtils } from "@/composables/useDateUtils";
 import { format } from "date-fns";
 
 import { ccService, handleThriftError } from "@cc-api";
+import store from "@/store";
+import { ADD_ERROR } from "@/store/mutations.type";
 import {
   Checker,
   Encoding,
@@ -327,6 +385,17 @@ import SelectReviewStatusDialog from "./SelectReviewStatusDialog";
 import SelectSameReport from "./SelectSameReport";
 
 import ReportStepMessage from "./ReportStepMessage";
+import {
+  candidateLabel,
+  clampLine,
+  collapseCandidates,
+  createRequestSequence,
+  definitionResultKind,
+  isDefinitionClick,
+  isDefinitionLookupSupported,
+  isMacPlatform,
+  symbolAt
+} from "./definitionLookup";
 
 import { useReviewStatus } from "@/composables/useReviewStatus";
 
@@ -360,6 +429,15 @@ const bus = mitt();
 const selectedChecker = ref(null);
 const docUrl = ref(null);
 const rootEl = ref(null);
+const definitionNavigationActive = ref(false);
+const definitionMenu = ref({
+  open: false,
+  target: undefined,
+  symbol: null,
+  groups: []
+});
+const definitionRequests = createRequestSequence();
+const isMac = isMacPlatform(navigator);
 
 const reviewStatus = useReviewStatus();
 
@@ -438,6 +516,9 @@ const lineWidgetField = context => {
 
 const trackingBranch = computed(() => sourceFile.value?.trackingBranch);
 const hasBlameInfo = computed(() => sourceFile.value?.hasBlameInfo);
+const definitionLookupEnabled = computed(() =>
+  isDefinitionLookupSupported(sourceFile.value?.filePath)
+);
 const editorCols = computed(() => {
   const maxCols = 12;
   return showComments.value ? maxCols - commentCols.value : maxCols;
@@ -475,6 +556,9 @@ watch(enableBlameView, async () => {
   clearArrowLines();
   await nextTick();
   addArrowLines();
+
+  if (definitionNavigationActive.value || !isTreeItemFileShown())
+    return;
 
   jumpTo(
     props.treeItem.step?.startLine.toNumber() ||
@@ -574,6 +658,11 @@ onMounted(() => {
       markField,
       lineWidgetField(parentAppContext),
       gitBlame.blameCompartment.of([]),
+      EditorView.clickAddsSelectionRange.of(event =>
+        !definitionLookupEnabled.value &&
+        (isMac ? event.metaKey : event.ctrlKey)
+      ),
+      EditorView.domEventHandlers({ mousedown: onEditorMouseDown }),
       compactTheme
     ]
   });
@@ -614,17 +703,17 @@ function init(_treeItem) {
   loading.value = true;
 
   if (_treeItem.step) {
-    loadReportStep(_treeItem.report, {
+    return loadReportStep(_treeItem.report, {
       stepId: props.treeItem.id,
       ..._treeItem.step
     });
   } else if (_treeItem.data) {
-    loadReportStep(_treeItem.report, {
+    return loadReportStep(_treeItem.report, {
       stepId: props.treeItem.id,
       ..._treeItem.data
     });
   } else {
-    loadReport(_treeItem.report);
+    return loadReport(_treeItem.report);
   }
 }
 
@@ -639,6 +728,8 @@ function updateCommentCount(report) {
 }
 
 async function loadReportStep(_report, { stepId, fileId, startLine }) {
+  resetDefinitionNavigation();
+
   if (!report.value ||
       !report.value.reportId.equals(_report.reportId) ||
       !sourceFile.value ||
@@ -661,6 +752,7 @@ async function loadReport(_report) {
   if (!_report)
     return;
 
+  resetDefinitionNavigation();
   report.value = _report;
 
   await setSourceFileData(_report.fileId);
@@ -709,11 +801,11 @@ function highlightCurrentBubble(id) {
 }
 
 async function setSourceFileData(fileId) {
-  const _sourceFile = await new Promise(resolve => {
+  const _sourceFile = await new Promise((resolve, reject) => {
     ccService.getClient().getSourceFileData(fileId, true,
       Encoding.DEFAULT, handleThriftError(_sourceFile => {
         resolve(_sourceFile);
-      }));
+      }, rejectWithError(reject)));
   });
 
   sourceFile.value = _sourceFile;
@@ -765,18 +857,18 @@ async function drawBugPath() {
   clearArrowLines();
 
   const _reportId = report.value.reportId;
-  const _reportDetail = await new Promise(resolve => {
+  const _reportDetail = await new Promise((resolve, reject) => {
     ccService.getClient().getReportDetails(_reportId,
       handleThriftError(_reportDetail => {
         resolve(_reportDetail);
-      }));
+      }, rejectWithError(reject)));
   });
 
   const _errorChecker = new Checker({
     analyzerName: report.value.analyzerName,
     checkerId: report.value.checkerId
   });
-  await new Promise(resolve => {
+  await new Promise((resolve, reject) => {
     ccService.getClient().getCheckerLabels(
       [ _errorChecker ],
       handleThriftError(labels => {
@@ -786,7 +878,7 @@ async function drawBugPath() {
         docUrl.value = _docUrlLabels.length ?
           _docUrlLabels[0].split("doc_url:")[1] : null;
         resolve(docUrl.value);
-      })
+      }, rejectWithError(reject))
     );
   });
 
@@ -1034,6 +1126,109 @@ function jumpTo(line, column) {
     selection: { anchor: position },
     effects: EditorView.scrollIntoView(position, { y: "center" })
   });
+}
+
+function rejectWithError(reject) {
+  return err => {
+    if (err instanceof Error &&
+        err.message.indexOf("Error code 401:") === -1
+    ) {
+      store.commit(ADD_ERROR, err.message);
+    }
+    reject(err);
+  };
+}
+
+function isTreeItemFileShown() {
+  const _fileId = props.treeItem.step?.fileId ||
+    props.treeItem.report.fileId;
+  return !!sourceFile.value && _fileId.equals(sourceFile.value.fileId);
+}
+
+function onEditorMouseDown(event, view) {
+  if (!definitionLookupEnabled.value || !report.value ||
+      !isDefinitionClick(event, isMac)
+  ) {
+    return false;
+  }
+
+  const _pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+  if (_pos === null) return false;
+
+  const _symbol = symbolAt(view.state, _pos);
+  if (!_symbol) return false;
+
+  const _start = view.coordsAtPos(_symbol.from, 1);
+  const _end = view.coordsAtPos(_symbol.to, -1);
+  if (!_start || !_end ||
+      event.clientX < _start.left || event.clientX > _end.right
+  ) {
+    return false;
+  }
+
+  event.preventDefault();
+  goToDefinition(_symbol.name, [ event.clientX, event.clientY ]);
+  return true;
+}
+
+async function goToDefinition(symbolName, target) {
+  const _requestId = definitionRequests.next();
+  definitionMenu.value.open = false;
+
+  let _candidates;
+  try {
+    _candidates = await ccService.getDefinitionCandidates(
+      report.value.runId, symbolName);
+  } catch {
+    return;
+  }
+
+  if (!definitionRequests.isLatest(_requestId)) return;
+
+  const _groups = collapseCandidates(_candidates);
+  if (definitionResultKind(_groups) === "navigate") {
+    await navigateToDefinition(_groups[0]);
+    return;
+  }
+
+  definitionMenu.value = {
+    open: true,
+    target,
+    symbol: symbolName,
+    groups: _groups.map(group => ({
+      ...group,
+      label: candidateLabel(symbolName, group)
+    }))
+  };
+}
+
+async function navigateToDefinition(target) {
+  definitionMenu.value.open = false;
+  loading.value = true;
+
+  try {
+    await setSourceFileData(target.fileId);
+    await drawBugPath();
+
+    const _line = clampLine(target.line, editor.value.state.doc.lines);
+    jumpTo(_line, 0);
+    definitionNavigationActive.value = true;
+  } catch {
+    // The error is already shown by rejectWithError().
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function backToReport() {
+  await init(props.treeItem);
+  definitionNavigationActive.value = false;
+}
+
+function resetDefinitionNavigation() {
+  definitionRequests.next();
+  definitionMenu.value.open = false;
+  definitionNavigationActive.value = false;
 }
 
 function confirmReviewStatusChange(comment, status, author) {

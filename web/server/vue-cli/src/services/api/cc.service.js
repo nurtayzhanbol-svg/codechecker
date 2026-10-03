@@ -9,6 +9,9 @@ import {
   SortType
 } from "@cc/report-server-types";
 
+import store from "@/store";
+import { ADD_ERROR } from "@/store/mutations.type";
+
 import { BaseService, handleThriftError } from "./_base.service";
 
 function extractTagWithRunName(runWithTagName) {
@@ -28,6 +31,25 @@ function extractTagWithRunName(runWithTagName) {
 class CodeCheckerService extends BaseService {
   constructor() {
     super("CodeCheckerService", ServiceClient);
+  }
+
+  /**
+   * Returns the definition candidates of the given symbol name in the run.
+   * The promise is rejected on API failure after the error is reported
+   * through the usual error store.
+   */
+  getDefinitionCandidates(runId, symbolName) {
+    return new Promise((resolve, reject) => {
+      this.getClient().getDefinitionCandidates(runId, symbolName, null,
+        handleThriftError(resolve, err => {
+          if (err instanceof Error &&
+              err.message.indexOf("Error code 401:") === -1
+          ) {
+            store.commit(ADD_ERROR, err.message);
+          }
+          reject(err);
+        }));
+    });
   }
 
   /**
