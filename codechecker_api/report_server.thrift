@@ -582,6 +582,22 @@ struct Rule {
 }
 typedef map<string, list<Rule>> GuidelineRules
 
+// A possible definition of a symbol, found in the symbol index stored with a
+// run. It is a candidate only: the symbol index is a name-based lookup, not a
+// semantic (compiler) resolution of a reference.
+struct DefinitionCandidate {
+  1: i64             fileId,    // File that contains the definition.
+  2: string          filePath,
+  3: i64             line,      // Line of the definition (1-based).
+  4: string          kind,      // E.g. "function", "struct", "macro".
+  5: string          language,  // Language the file was indexed as.
+  6: optional i64    endLine,   // Last line of the definition, if known.
+  7: optional string scope,     // Enclosing scope, e.g. a namespace name.
+  8: optional string scopeKind, // Kind of the enclosing scope.
+  9: optional string signature, // E.g. the parameter list of a function.
+}
+typedef list<DefinitionCandidate> DefinitionCandidateList
+
 service codeCheckerDBAccess {
 
   // Gives back all analyzed runs.
@@ -753,6 +769,24 @@ service codeCheckerDBAccess {
   // PERMISSION: PRODUCT_VIEW
   BlameInfo getBlameInfo(1: i64 fileId)
                          throws (1: shared.RequestFailed requestError),
+
+  // Get the candidate definitions of a symbol name in the current state of a
+  // run, based on the symbol index stored with the run.
+  // Multiple candidates are expected (overloads, conditionally compiled
+  // definitions, the same file at several paths, a header indexed both as C
+  // and C++), and an empty list is a normal result (unknown run, a run stored
+  // without a symbol index or no definition with this name).
+  // Results come from the files currently belonging to the run, even if the
+  // caller shows an older version of a source file.
+  // The order of the results is deterministic but it is not a relevance
+  // ranking. At most 'limit' candidates are returned, MAX_QUERY_SIZE is used
+  // if 'limit' is not given or larger than MAX_QUERY_SIZE.
+  // An empty 'symbolName' is a request error.
+  // PERMISSION: PRODUCT_VIEW
+  DefinitionCandidateList getDefinitionCandidates(1: i64          runId,
+                                                  2: string       symbolName,
+                                                  3: optional i64 limit)
+                                                  throws (1: shared.RequestFailed requestError),
 
   // Get line content information for multiple files in different positions.
   // The first key of the map is a file id, the second is a line number:

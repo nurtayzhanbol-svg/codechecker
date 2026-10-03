@@ -37,7 +37,7 @@ from codechecker_api.python.DBAccess_v6.ttypes import \
     BlameData, BlameInfo, \
     CheckerCount, CheckerStatusVerificationDetail, Commit, CommitAuthor, \
     CommentData, \
-    DetectionStatus, DiffType, \
+    DefinitionCandidate, DetectionStatus, DiffType, \
     Encoding, ExportData, \
     Order, \
     ReportData, ReportDetails, ReportStatus, ReviewData, ReviewStatusRule, \
@@ -78,6 +78,7 @@ from .thrift_enum_helper import detection_status_enum, \
     detection_status_str, report_status_enum, \
     review_status_enum, review_status_str, report_extended_data_type_enum
 from .report_annotations import report_annotation_types
+from .symbol_index_store import find_definitions
 
 # These names are inherited from Thrift stubs.
 # pylint: disable=invalid-name
@@ -3176,6 +3177,34 @@ class ThriftRequestHandler:
                     'utf-8', errors='ignore')
 
             return source_file_data
+
+    @exc_to_thrift_reqfail
+    @timeit
+    def getDefinitionCandidates(self, runId, symbolName, limit):
+        """ Get the candidate definitions of a symbol name in a run. """
+        self.__require_view()
+
+        if not symbolName or not symbolName.strip():
+            raise codechecker_api_shared.ttypes.RequestFailed(
+                codechecker_api_shared.ttypes.ErrorCode.GENERAL,
+                "The symbol name must not be empty.")
+
+        limit = verify_limit_range(limit)
+
+        with DBSession(self._Session) as session:
+            candidates = find_definitions(session, runId, symbolName,
+                                          limit=limit)
+
+        return [DefinitionCandidate(fileId=c.file_id,
+                                    filePath=c.filepath,
+                                    line=c.line,
+                                    kind=c.kind,
+                                    language=c.language,
+                                    endLine=c.end_line,
+                                    scope=c.scope,
+                                    scopeKind=c.scope_kind,
+                                    signature=c.signature)
+                for c in candidates]
 
     @exc_to_thrift_reqfail
     @timeit
