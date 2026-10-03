@@ -256,7 +256,7 @@ class BuildIndexesTest(unittest.TestCase):
 
         z_c = doc['indexes'][0]
         self.assertEqual([d['name'] for d in z_c['definitions']],
-                         ['a', 'pt'])  # source order, reference dropped
+                         ['a', 'pt'])  # reference dropped
         self.assertEqual(z_c['definitions'][1], {
             'name': 'pt', 'kind': 'struct', 'line': 2, 'end_line': None,
             'scope': None, 'scope_kind': None, 'signature': None,
@@ -264,6 +264,32 @@ class BuildIndexesTest(unittest.TestCase):
         self.assertEqual(doc['indexes'][2]['definitions'], [])
         self.assertEqual(doc['indexes'][3]['definitions'][0]['signature'],
                          '(void)')
+
+    def test_definitions_are_in_line_order_not_name_order(self):
+        tag = {"_type": "tag", "path": "/p/o.c", "kind": "function",
+               "roles": "def"}
+        ctags = FakeCtags({'/p/o.c': [
+            dict(tag, name='zebra', line=1),
+            dict(tag, name='mango', line=2),
+            dict(tag, name='apple', line=4),
+            dict(tag, name='apple', line=4),  # duplicate tag
+        ]})
+        indexes = symbol_index.build_indexes({('h', 'c'): ['/p/o.c']}, ctags)
+        self.assertEqual([(d.name, d.line) for d in indexes[0].definitions],
+                         [('zebra', 1), ('mango', 2), ('apple', 4)])
+
+    def test_same_line_tie_with_null_fields_is_ordered(self):
+        # namespace a { int f; } int f;
+        tag = {"_type": "tag", "path": "/p/t.cpp", "name": "f", "line": 1,
+               "end": 1, "kind": "variable", "typeref": "typename:int",
+               "roles": "def"}
+        scoped = dict(tag, scope='a', scopeKind='namespace')
+        expected = [(None, None), ('a', 'namespace')]
+        for raw in ([tag, scoped], [scoped, tag]):
+            indexes = symbol_index.build_indexes(
+                {('h', 'c++'): ['/p/t.cpp']}, FakeCtags({'/p/t.cpp': raw}))
+            self.assertEqual([(d.scope, d.scope_kind)
+                              for d in indexes[0].definitions], expected)
 
     def test_unmapped_language_is_skipped(self):
         ctags = FakeCtags({})
@@ -324,6 +350,49 @@ class CtagsValidationTest(unittest.TestCase):
     def test_real_ctags_is_accepted(self):
         ctags = symbol_index.Ctags.find(CTAGS)
         self.assertEqual(ctags.binary, CTAGS)
+
+
+@unittest.skipIf(CTAGS is None or GXX is None,
+                 "Universal Ctags with JSON and g++ are required")
+class RealCtagsOrderingTest(unittest.TestCase):
+    """Definition ordering of real Ctags output in a generated symbols.json."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def generate(self, source: str) -> list[tuple]:
+        (self.tmp / 'tie.cpp').write_text(source)
+        actions, _ = log_parser.parse_unique_log([
+            {"directory": str(self.tmp),
+             "command": f"{GXX} -c tie.cpp -o tie.o",
+             "file": "tie.cpp"}])
+        output = self.tmp / 'symbols.json'
+        symbol_index.generate(actions, symbol_index.Ctags.find(CTAGS),
+                              output, jobs=1)
+        with open(output, encoding='utf-8') as f:
+            doc = json.load(f)
+        self.assertEqual(len(doc['indexes']), 1)
+        return [(d['name'], d['line'], d['scope'])
+                for d in doc['indexes'][0]['definitions']]
+
+    def test_scoped_and_unscoped_same_name_on_one_line(self):
+        source = 'namespace a { int f; } int f;\n'
+        definitions = self.generate(source)
+        self.assertEqual(definitions,
+                         [('a', 1, None), ('f', 1, None), ('f', 1, 'a')])
+        self.assertEqual(self.generate(source), definitions)
+
+    def test_line_order_differs_from_name_order(self):
+        definitions = self.generate(textwrap.dedent("""\
+            int zebra(void) { return 1; }
+            int mango;
+            int apple(void) { return 2; }
+            """))
+        self.assertEqual([name for name, _, _ in definitions],
+                         ['zebra', 'mango', 'apple'])
 
 
 @unittest.skipIf(CTAGS is None or GCC is None or GXX is None,

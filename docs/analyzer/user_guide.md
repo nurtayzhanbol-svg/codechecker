@@ -1911,7 +1911,8 @@ language (e.g. `function`, `struct`, `class`, `namespace`, `variable`,
 `typedef`, `macro`, `member`). `end_line`, `scope`, `scope_kind`, `signature`
 and `typeref` are `null` when not known. The output is deterministic: indexes
 are sorted by content hash and language, paths are sorted and definitions are
-in source order.
+in source order (by line, with deterministic tie-breakers for definitions on
+the same line).
 
 `CodeChecker store` uploads `symbols.json` together with the indexed files, see
 [the web user guide](../web/user_guide.md#storing-the-symbol-index).
