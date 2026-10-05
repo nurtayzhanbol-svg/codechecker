@@ -57,7 +57,8 @@ from codechecker_common.checker_labels import CheckerLabels
 from codechecker_common.compatibility.multiprocessing import Pool, cpu_count
 from codechecker_common.source_code_comment_handler import \
     SourceCodeCommentHandler
-from codechecker_common.util import format_size, load_json, strtobool
+from codechecker_common.util import format_size, get_file_content_hash, \
+load_json, strtobool
 
 from codechecker_web.shared import webserver_context, host_check
 from codechecker_web.shared.env import get_default_workspace

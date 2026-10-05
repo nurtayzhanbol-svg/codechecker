@@ -126,6 +126,15 @@ def load_yaml(path: str):
         LOG.warning(ex)
         return None
 
+def get_file_content_hash(file_path):
+    """
+    Return the file content hash for a file.
+    """
+    with open(file_path, 'rb') as content:
+        hasher = hashlib.sha256()
+        hasher.update(content.read())
+        return hasher.hexdigest()
+
 
 def get_linef(fp: TextIO, line_no: int) -> str:
     """'fp' should be (readable) file object.
