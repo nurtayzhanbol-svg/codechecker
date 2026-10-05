@@ -309,6 +309,37 @@ used to generate a log file on the fly.""")
                                     "help message of this command below for "
                                     "more information.\n"
                                     "USE WISELY AND AT YOUR OWN RISK!")
+    
+    symbol_index_opts = parser.add_argument_group(
+        "symbol index arguments",
+        """
+Generate a symbol definition index of the analyzed project with Universal
+Ctags. The index is written to '<OUTPUT_DIR>/symbols.json' and describes
+the definitions (functions, types, variables, ...) found in the analyzed source
+files and in the headers they include. Headers coming from the compiler's
+implicit include directories (standard library, toolchain) are excluded unless
+the build explicitly asked for them with -I, -isystem, -iquote or
+-idirafter.""")
+
+    symbol_index_opts.add_argument('--symbol-index',
+                                   dest='symbol_index',
+                                   action='store_true',
+                                   default=argparse.SUPPRESS,
+                                   required=False,
+                                   help="Generate 'symbols.json' in the "
+                                        "output directory after the "
+                                        "analysis. Requires Universal Ctags "
+                                        "with JSON output support.")
+
+    symbol_index_opts.add_argument('--ctags-binary',
+                                   dest='ctags_binary',
+                                   metavar='PATH',
+                                   default=argparse.SUPPRESS,
+                                   required=False,
+                                   help="Path of the Universal Ctags "
+                                        "executable used by --symbol-index. "
+                                        "By default 'ctags' is looked up in "
+                                        "PATH.")
 
     skip_mode = parser.add_argument_group("file filter arguments")
     skip_mode.add_argument('-i', '--ignore', '--skip',
@@ -977,7 +1008,10 @@ def main(args):
                           'add_gcc_include_dirs_with_isystem',
                           'compiler_info_file',
                           'dump_compiler_info_file',
-                          'enable_z3_refutation']
+                          'enable_z3_refutation',
+                          'symbol_index',
+                          'ctags_binary']
+
         for key in args_to_update:
             __update_if_key_exists(args, analyze_args, key)
         if 'clean' in args:

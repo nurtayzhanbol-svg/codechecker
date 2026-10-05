@@ -383,6 +383,38 @@ def add_arguments_to_parser(parser):
                         help="Annotate the run analysis with a custom name in "
                              "the created metadata file.")
 
+    symbol_index_opts = parser.add_argument_group(
+        "symbol index arguments",
+        """
+Generate a symbol definition index of the analyzed project with Universal
+Ctags. The index is written to '<OUTPUT_DIR>/symbols.json' and describes
+the definitions (functions, types, variables, ...) found in the analyzed source
+files and in the headers they include. Headers coming from the compiler's
+implicit include directories (standard library, toolchain) are excluded unless
+the build explicitly asked for them with -I, -isystem, -iquote or
+-idirafter.""")
+
+    symbol_index_opts.add_argument('--symbol-index',
+                                   dest='symbol_index',
+                                   action='store_true',
+                                   default=argparse.SUPPRESS,
+                                   required=False,
+                                   help="Generate 'symbols.json' in the "
+                                        "output directory after the "
+                                        "analysis. Requires Universal Ctags "
+                                        "with JSON output support.")
+
+    symbol_index_opts.add_argument('--ctags-binary',
+                                   dest='ctags_binary',
+                                   metavar='PATH',
+                                   default=argparse.SUPPRESS,
+                                   required=False,
+                                   help="Path of the Universal Ctags "
+                                        "executable used by --symbol-index. "
+                                        "By default 'ctags' is looked up in "
+                                        "PATH.")
+
+
     analyzer_opts = parser.add_argument_group("analyzer arguments")
 
     analyzer_opts.add_argument('--analyzers',
